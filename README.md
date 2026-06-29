@@ -2,13 +2,17 @@
 
 A Rust library for covert message transmission via mDNS (Multicast DNS). Messages are encrypted and disguised as printer service announcements on the local network.
 
+[API Guide](API_GUIDE.md)
+
 ## Features
 
-- ChaCha20-Poly1305 authenticated encryption with 256-bit security
-- Modular architecture with separate protocol, crypto, and networking modules
-- Binary protocol with versioning and structured packet format
-- Built-in authentication and corruption detection
-- mDNS masking via HP LaserJet printer service announcements
+- **ChaCha20-Poly1305**: Authenticated encryption with 256-bit security
+- **Multi-Vendor Obfuscation**: 20+ realistic printer profiles (HP, Canon, Xerox, Brother, Ricoh, Kyocera, Lexmark, Toshiba)
+- **Randomized Identities**: Each message uses a randomly selected printer identity
+- **Location Masking**: 25+ office location variations to avoid pattern detection
+- **Modular Architecture**: Separate protocol, crypto, and networking modules
+- **Binary Protocol**: Versioned format with timestamp and ID tracking
+- **Built-in Authentication**: AEAD integrity checking and tampering detection
 
 ## Quick Start
 
@@ -91,6 +95,43 @@ ChaCha20-Poly1305 Encryption
 | `network.rs`  | mDNS daemon, service registration   |
 | `main.rs`     | CLI application                     |
 | `lib.rs`      | Public API for library users        |
+
+## Obfuscation & Masking
+
+The library uses realistic printer service announcements to mask covert traffic. Each message uses randomized identities to defeat pattern analysis.
+
+### Multi-Vendor Printer Profiles
+
+20+ realistic printer models from 8 major manufacturers:
+
+- **HP**: LaserJet Pro M402, LaserJet Enterprise M506, OfficeJet Pro 8025, Color LaserJet Pro M454, PageWide Pro 777
+- **Canon**: imageRUNNER 2520, imageRUNNER ADVANCE C3500, LBP664Cx
+- **Xerox**: VersaLink C7025, WorkCentre 5335
+- **Brother**: HL-L8360CDW, MFC-L9550CDW
+- **Ricoh**: MP C3004, AFICIO MP 7502
+- **Kyocera**: ECOSYS M8130cidn, TASKalfa 3510i
+- **Lexmark**: MS825, CX725
+- **Toshiba**: e-STUDIO 3008A, e-STUDIO 2018A
+
+### Randomized Identities
+
+Each sent message randomly selects:
+
+- Printer vendor and model
+- Service instance name
+- Host name and port
+- Office location metadata
+
+This makes network analysis significantly harder by avoiding recognizable patterns.
+
+### Location Masking
+
+25+ realistic office locations prevent fingerprinting through metadata:
+
+- Department names (HR, Finance, Legal, Engineering, Sales, IT)
+- Room numbers (201-401)
+- Floor designations
+- Common areas (Break Room, Conference Room, Copy Center)
 
 ## Encryption
 

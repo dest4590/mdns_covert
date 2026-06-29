@@ -17,3 +17,4 @@ clap = { version = "4.6.1", features = ["derive"] }
 if-addrs = "0.15.0"
 chacha20poly1305 = "0.11.0"
 getrandom = "0.4.3"
+rand = { version = "0.10.1", features = ["std", "std_rng"] }

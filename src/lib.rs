@@ -38,10 +38,10 @@ pub mod network;
 pub mod protocol;
 
 pub mod prelude {
+    pub use crate::NetworkManager;
     pub use crate::crypto::{chacha20_decrypt, chacha20_encrypt, hex_decode, hex_encode};
     pub use crate::network::{create_mdns_daemon, get_local_ip, listen_packets, send_packet};
-    pub use crate::protocol::{MessageType, Packet, PROTOCOL_VERSION};
-    pub use crate::NetworkManager;
+    pub use crate::protocol::{MessageType, PROTOCOL_VERSION, Packet};
 }
 
 use crypto::{chacha20_decrypt, chacha20_encrypt, hex_decode, hex_encode};
