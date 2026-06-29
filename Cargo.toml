@@ -2,6 +2,15 @@
 name = "mdns_covert"
 version = "0.1.0"
 edition = "2024"
+authors = ["dest4590 <dest4590@gmail.com>"]
+description = "Covert message transmission via mDNS with ChaCha20-Poly1305 encryption"
+license = "MIT"
+repository = "https://github.com/dest4590/mdns_covert"
+homepage = "https://github.com/dest4590/mdns_covert"
+documentation = "https://docs.rs/mdns_covert"
+readme = "README.md"
+keywords = ["mdns", "covert", "encryption", "chacha20"]
+categories = ["network-programming", "cryptography"]
 
 [[bin]]
 name = "mdns_covert"
