@@ -34,14 +34,27 @@
 //! - [`network`] - mDNS operations and service management
 
 pub mod crypto;
+pub mod db;
 pub mod network;
 pub mod protocol;
 
+pub use crypto::CovertError;
+
 pub mod prelude {
     pub use crate::NetworkManager;
-    pub use crate::crypto::{chacha20_decrypt, chacha20_encrypt, hex_decode, hex_encode};
-    pub use crate::network::{create_mdns_daemon, get_local_ip, listen_packets, send_packet};
-    pub use crate::protocol::{MessageType, PROTOCOL_VERSION, Packet};
+    pub use crate::crypto::{
+        CovertError, chacha20_decrypt, chacha20_encrypt, hex_decode, hex_encode,
+    };
+    pub use crate::db::{
+        DEVICE_PROFILES, DeviceProfile, PHONE_PROFILES, PRINTER_PROFILES, TV_PROFILES,
+    };
+    pub use crate::network::{
+        ReplayDetector, create_mdns_daemon, deregister_service, get_local_ip, listen_packets,
+        send_packet,
+    };
+    pub use crate::protocol::{
+        FragmentAssembler, MAX_FRAGMENT_PAYLOAD, MessageType, PROTOCOL_VERSION, Packet,
+    };
 }
 
 use crypto::{chacha20_decrypt, chacha20_encrypt, hex_decode, hex_encode};
@@ -61,14 +74,14 @@ impl NetworkManager {
     ///
     /// # Returns
     /// * `Ok(NetworkManager)` if mDNS initialization succeeds
-    /// * `Err(String)` if initialization fails
+    /// * `Err(CovertError)` if initialization fails
     ///
     /// # Example
     /// ```ignore
     /// let manager = NetworkManager::new()?;
     /// ```
-    pub fn new() -> Result<Self, String> {
-        let mdns = create_mdns_daemon()?;
+    pub fn new() -> Result<Self, CovertError> {
+        let mdns = create_mdns_daemon().map_err(CovertError::Network)?;
         Ok(NetworkManager { mdns })
     }
 
@@ -83,14 +96,14 @@ impl NetworkManager {
     ///
     /// # Returns
     /// * `Ok((u16, u32))` - (message_id, timestamp)
-    /// * `Err(String)` - Error message
+    /// * `Err(CovertError)` - Error message
     ///
     /// # Example
     /// ```ignore
     /// let (id, timestamp) = manager.send_message("Secret", "my_key")?;
     /// println!("Message ID: {}", id);
     /// ```
-    pub fn send_message(&self, message: &str, passphrase: &str) -> Result<(u16, u32), String> {
+    pub fn send_message(&self, message: &str, passphrase: &str) -> Result<(u16, u32), CovertError> {
         let message_bytes = message.as_bytes().to_vec();
         let mut packet = Packet::new(MessageType::Data, message_bytes);
         packet.sequence = 0;
@@ -99,7 +112,7 @@ impl NetworkManager {
         let encrypted = chacha20_encrypt(&packet_data, passphrase)?;
         let hex_payload = hex_encode(&encrypted);
 
-        send_packet(&self.mdns, &hex_payload)?;
+        send_packet(&self.mdns, &hex_payload).map_err(CovertError::Network)?;
 
         Ok((packet.message_id, packet.timestamp))
     }
@@ -114,7 +127,7 @@ impl NetworkManager {
     ///
     /// # Returns
     /// * `Ok(())` if listening completes
-    /// * `Err(String)` if error occurs
+    /// * `Err(CovertError)` if error occurs
     ///
     /// # Example
     /// ```ignore
@@ -122,7 +135,11 @@ impl NetworkManager {
     ///     println!("Received: {}", message);
     /// })?;
     /// ```
-    pub fn listen_for_messages<F>(&self, passphrase: &str, mut callback: F) -> Result<(), String>
+    pub fn listen_for_messages<F>(
+        &self,
+        passphrase: &str,
+        mut callback: F,
+    ) -> Result<(), CovertError>
     where
         F: FnMut(&str),
     {
@@ -130,7 +147,8 @@ impl NetworkManager {
             let encrypted =
                 hex_decode(hex_payload).map_err(|e| format!("Hex decode error: {}", e))?;
 
-            let decrypted = chacha20_decrypt(&encrypted, passphrase)?;
+            let decrypted = chacha20_decrypt(&encrypted, passphrase)
+                .map_err(|e| format!("Decryption error: {}", e))?;
 
             let packet =
                 Packet::deserialize(&decrypted).map_err(|e| format!("Parse error: {}", e))?;
@@ -141,9 +159,9 @@ impl NetworkManager {
 
             Ok(())
         })
+        .map_err(CovertError::Network)
     }
 
-    /// Get the local IP address
     pub fn get_local_ip(&self) -> String {
         network::get_local_ip()
     }
@@ -183,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_chacha20_unicode_messages() {
-        let message = "Secret message 密码";
+        let message = "Secret message";
         let passphrase = "unicode_key";
 
         let packet = Packet::new(MessageType::Data, message.as_bytes().to_vec());

@@ -1,186 +1,89 @@
 //! Network module for mDNS operations.
 //!
 //! Handles mDNS daemon initialization, service registration and discovery.
-//! Messages are disguised as a printer service on the local network.
-//! Supports multiple printer models and randomized masking for stealth.
+//! Messages are disguised as random device services on the local network.
+//! Supports printers, TVs, phones, and speakers for varied obfuscation.
 
+use crate::db::{self, DeviceProfile};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::seq::IndexedRandom;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
-/// mDNS service type (_printer._tcp.local.)
-const SERVICE_TYPE: &str = "_printer._tcp.local.";
-
-/// Realistic printer profiles for better masking
-#[derive(Clone)]
-pub struct PrinterProfile {
-    pub vendor: &'static str,
-    pub model: &'static str,
-    pub instance_name: String,
-    pub host_name: String,
-    pub port: u16,
-    pub location: &'static str,
+/// Replay detector for deduplicating received payloads.
+///
+/// Maintains a time-windowed set of seen payload hashes.
+/// Expired entries are automatically pruned on each call.
+pub struct ReplayDetector {
+    seen: HashSet<String>,
+    timestamps: HashMap<String, Instant>,
+    window: Duration,
 }
 
-impl PrinterProfile {
-    /// Create a new printer profile
-    fn new(
-        vendor: &'static str,
-        model: &'static str,
-        code: &'static str,
-        port: u16,
-        location: &'static str,
-    ) -> Self {
-        let instance_name = format!("{}_{}", vendor.replace(" ", "_"), model.replace(" ", "_"));
-        let host_name = format!("{}-{}.local.", vendor.chars().next().unwrap_or('H'), code);
+impl ReplayDetector {
+    pub fn new(window: Duration) -> Self {
+        ReplayDetector {
+            seen: HashSet::new(),
+            timestamps: HashMap::new(),
+            window,
+        }
+    }
 
-        PrinterProfile {
-            vendor,
-            model,
-            instance_name,
-            host_name,
-            port,
-            location,
+    pub fn is_new(&mut self, payload_hex: &str) -> bool {
+        self.prune_expired();
+        if self.seen.contains(payload_hex) {
+            return false;
+        }
+        self.seen.insert(payload_hex.to_string());
+        self.timestamps
+            .insert(payload_hex.to_string(), Instant::now());
+        true
+    }
+
+    fn prune_expired(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<String> = self
+            .timestamps
+            .iter()
+            .filter(|(_, time)| now.duration_since(**time) >= self.window)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired {
+            self.seen.remove(&key);
+            self.timestamps.remove(&key);
         }
     }
 }
 
-/// List of realistic printer profiles for obfuscation
-fn get_printer_profiles() -> Vec<PrinterProfile> {
-    vec![
-        // HP Printers
-        PrinterProfile::new("HP", "LaserJet Pro M402", "M402", 9100, "Main Office"),
-        PrinterProfile::new("HP", "LaserJet Enterprise M506", "M506", 9100, "Room 301"),
-        PrinterProfile::new("HP", "OfficeJet Pro 8025", "8025", 9100, "Break Room"),
-        PrinterProfile::new(
-            "HP",
-            "Color LaserJet Pro M454",
-            "M454",
-            9100,
-            "Design Floor",
-        ),
-        PrinterProfile::new("HP", "PageWide Pro 777", "777", 9100, "Floor 2"),
-        // Canon
-        PrinterProfile::new(
-            "Canon",
-            "imageRUNNER 2520",
-            "IR2520",
-            9100,
-            "Conference Room A",
-        ),
-        PrinterProfile::new(
-            "Canon",
-            "imageRUNNER ADVANCE C3500",
-            "C3500",
-            9100,
-            "Copy Center",
-        ),
-        PrinterProfile::new("Canon", "LBP664Cx", "LBP664", 9100, "Accounting"),
-        // Xerox
-        PrinterProfile::new("Xerox", "VersaLink C7025", "C7025", 9100, "Marketing"),
-        PrinterProfile::new("Xerox", "WorkCentre 5335", "5335", 9100, "IT Department"),
-        // Brother
-        PrinterProfile::new("Brother", "HL-L8360CDW", "L8360", 9100, "Executive Suite"),
-        PrinterProfile::new("Brother", "MFC-L9550CDW", "L9550", 9100, "Warehouse"),
-        // Ricoh
-        PrinterProfile::new("Ricoh", "MP C3004", "C3004", 9100, "Legal"),
-        PrinterProfile::new("Ricoh", "AFICIO MP 7502", "7502", 9100, "Reception"),
-        // Kyocera
-        PrinterProfile::new(
-            "Kyocera",
-            "ECOSYS M8130cidn",
-            "M8130",
-            9100,
-            "Finance Floor",
-        ),
-        PrinterProfile::new("Kyocera", "TASKalfa 3510i", "3510", 9100, "Engineering"),
-        // Lexmark
-        PrinterProfile::new("Lexmark", "MS825", "MS825", 9100, "HR Department"),
-        PrinterProfile::new("Lexmark", "CX725", "CX725", 9100, "Floor 3"),
-        // Toshiba
-        PrinterProfile::new("Toshiba", "e-STUDIO 3008A", "3008A", 9100, "Logistics"),
-        PrinterProfile::new("Toshiba", "e-STUDIO 2018A", "2018A", 9100, "Support Center"),
-    ]
-}
-
-/// Location variations for added obfuscation
-fn get_location_variations() -> Vec<&'static str> {
-    vec![
-        "Main Office",
-        "Break Room",
-        "Conference Room A",
-        "Conference Room B",
-        "Floor 2",
-        "Floor 3",
-        "Floor 4",
-        "Copy Center",
-        "Accounting",
-        "Marketing",
-        "IT Department",
-        "Executive Suite",
-        "Warehouse",
-        "Legal",
-        "Reception",
-        "Finance Floor",
-        "Engineering",
-        "HR Department",
-        "Sales Floor",
-        "Support Center",
-        "Room 201",
-        "Room 202",
-        "Room 301",
-        "Room 401",
-    ]
-}
-
-/// Get a random printer profile for masking
-fn get_random_printer() -> PrinterProfile {
+fn get_random_device() -> DeviceProfile {
     let mut rng = rand::rng();
-    let profiles: Vec<PrinterProfile> = get_printer_profiles();
-    profiles
+    db::DEVICE_PROFILES
         .choose(&mut rng)
-        .unwrap_or_else(|| &profiles[0])
+        .unwrap_or(&db::DEVICE_PROFILES[0])
         .clone()
 }
 
-/// Get a random location for the TXT record
 fn get_random_location() -> &'static str {
     let mut rng = rand::rng();
-    let locations = get_location_variations();
-    *locations.choose(&mut rng).unwrap_or(&"Main Office")
+    db::LOCATION_VARIATIONS
+        .choose(&mut rng)
+        .unwrap_or(&"Main Office")
 }
 
-/// Create and initialize mDNS daemon
-///
-/// Sets up the mDNS service daemon for service registration and discovery.
-///
-/// # Returns
-/// * `Ok(ServiceDaemon)` if initialization succeeds
-/// * `Err(String)` if initialization fails
-///
-/// # Example
-/// ```ignore
-/// let mdns = create_mdns_daemon()?;
-/// ```
 pub fn create_mdns_daemon() -> Result<ServiceDaemon, String> {
     ServiceDaemon::new().map_err(|e| format!("mDNS creation error: {}", e))
 }
 
-/// Get the local IPv4 address
-///
-/// Scans network interfaces and returns the first non-loopback,
-/// non-docker IPv4 address.
-///
-/// # Returns
-/// IPv4 address as string (defaults to "127.0.0.1" if not found)
 pub fn get_local_ip() -> String {
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => {
             for iface in interfaces {
-                if !iface.name.starts_with("lo") && !iface.name.contains("docker") {
-                    if let std::net::IpAddr::V4(addr) = iface.ip() {
-                        return addr.to_string();
-                    }
+                if !iface.name.starts_with("lo")
+                    && !iface.name.contains("docker")
+                    && let std::net::IpAddr::V4(addr) = iface.ip()
+                {
+                    return addr.to_string();
                 }
             }
             "127.0.0.1".to_string()
@@ -192,39 +95,30 @@ pub fn get_local_ip() -> String {
 /// Register and send packet via mDNS
 ///
 /// Creates an mDNS service with the encrypted payload in the TXT record.
-/// The packet is disguised as a randomized printer service announcement
-/// for better obfuscation and stealth.
-///
-/// # Arguments
-/// * `mdns` - mDNS daemon instance
-/// * `hex_payload` - HEX-encoded encrypted packet
+/// The packet is disguised as a randomized device service announcement
+/// (printer, TV, phone, speaker) for better obfuscation.
 ///
 /// # Returns
-/// * `Ok(())` if registration succeeds
-/// * `Err(String)` if registration fails
-///
-/// # Example
-/// ```ignore
-/// let mdns = create_mdns_daemon()?;
-/// send_packet(&mdns, "48656c6c6f")?;
-/// ```
-pub fn send_packet(mdns: &ServiceDaemon, hex_payload: &str) -> Result<(), String> {
-    let printer = get_random_printer();
+/// * `Ok(String)` - The service instance name for later deregistration
+pub fn send_packet(mdns: &ServiceDaemon, hex_payload: &str) -> Result<String, String> {
+    let device = get_random_device();
 
     let mut txt_properties = HashMap::new();
     txt_properties.insert("note".to_string(), get_random_location().to_string());
     txt_properties.insert("payload".to_string(), hex_payload.to_string());
-    txt_properties.insert("vendor".to_string(), printer.vendor.to_string());
-    txt_properties.insert("model".to_string(), printer.model.to_string());
+    txt_properties.insert("vendor".to_string(), device.vendor.to_string());
+    txt_properties.insert("model".to_string(), device.model.to_string());
 
     let local_ip = get_local_ip();
+    let instance_name = device.instance_name();
+    let host_name = device.host_name();
 
     let service_info = ServiceInfo::new(
-        SERVICE_TYPE,
-        &printer.instance_name,
-        &printer.host_name,
+        device.service_type,
+        &instance_name,
+        &host_name,
         &local_ip,
-        printer.port,
+        device.port,
         txt_properties,
     )
     .map_err(|e| format!("Service creation error: {}", e))?;
@@ -232,72 +126,167 @@ pub fn send_packet(mdns: &ServiceDaemon, hex_payload: &str) -> Result<(), String
     mdns.register(service_info)
         .map_err(|e| format!("Service registration error: {}", e))?;
 
-    println!("[+] Service registered as {}", printer.instance_name);
-    println!("    Vendor: {}", printer.vendor);
-    println!("    Model: {}", printer.model);
-    println!("    Location: {}", printer.location);
-    println!("    Address: {}:{}", local_ip, printer.port);
+    println!("[+] Registered as {}", device.full_service_name());
+    println!("    Service: {}", device.service_type);
+    println!("    Vendor:  {}", device.vendor);
+    println!("    Model:   {}", device.model);
+    println!("    Address: {}:{}", local_ip, device.port);
+
+    Ok(device.full_service_name())
+}
+
+pub fn deregister_service(mdns: &ServiceDaemon, service_name: &str) -> Result<(), String> {
+    mdns.unregister(service_name)
+        .map_err(|e| format!("Service deregistration error: {}", e))?;
     Ok(())
 }
 
-/// Listen for and process packets from the network
+/// Listen for and process packets from the network.
 ///
-/// Browses for mDNS printer services and calls the callback function
-/// for each discovered payload.
-///
-/// # Arguments
-/// * `mdns` - mDNS daemon instance
-/// * `callback` - Function to call for each payload (HEX string)
-///
-/// # Returns
-/// * `Ok(())` if listening starts successfully
-/// * `Err(String)` if error occurs
-///
-/// # Example
-/// ```ignore
-/// let mdns = create_mdns_daemon()?;
-/// listen_packets(&mdns, |payload| {
-///     println!("Received: {}", payload);
-///     Ok(())
-/// })?;
-/// ```
+/// Browses all device service types (printer, TV, phone) and calls the
+/// callback function for each discovered payload.
 pub fn listen_packets<F>(mdns: &ServiceDaemon, mut callback: F) -> Result<(), String>
 where
     F: FnMut(&str) -> Result<(), String>,
 {
-    let receiver = mdns
-        .browse(SERVICE_TYPE)
-        .map_err(|e| format!("Browse error: {}", e))?;
+    // Browse all known service types
+    let service_types = [
+        "_printer._tcp.local.",
+        "_airplay._tcp.local.",
+        "_hap._tcp.local.",
+    ];
 
-    let mut processed_payloads = std::collections::HashSet::new();
-
-    println!("[*] Listening for {} ...", SERVICE_TYPE);
-
-    while let Ok(event) = receiver.recv() {
-        match event {
-            ServiceEvent::ServiceFound(fullname, _) => {
-                println!("[*] Service found: {}", fullname);
+    let mut receivers = Vec::new();
+    for st in &service_types {
+        match mdns.browse(st) {
+            Ok(receiver) => {
+                println!("[*] Browsing {} ...", st);
+                receivers.push(receiver);
             }
-            ServiceEvent::ServiceResolved(info) => {
-                println!("[+] Service resolved: {}", info.get_fullname());
-
-                if let Some(payload_hex) = info.get_property_val_str("payload") {
-                    if processed_payloads.contains(payload_hex) {
-                        continue;
-                    }
-                    processed_payloads.insert(payload_hex.to_string());
-
-                    if let Err(e) = callback(payload_hex) {
-                        println!("[!] Processing error: {}", e);
-                    }
-                }
+            Err(e) => {
+                println!("[!] Failed to browse {}: {}", st, e);
             }
-            ServiceEvent::ServiceRemoved(fullname, _) => {
-                println!("[-] Service removed: {}", fullname);
-            }
-            _ => {}
         }
     }
 
-    Ok(())
+    if receivers.is_empty() {
+        return Err("No service types could be browsed".to_string());
+    }
+
+    let mut replay_detector = ReplayDetector::new(Duration::from_secs(300));
+
+    // Round-robin through receivers
+    loop {
+        for receiver in &receivers {
+            if let Ok(event) = receiver.try_recv() {
+                match event {
+                    ServiceEvent::ServiceFound(fullname, _) => {
+                        println!("[*] Service found: {}", fullname);
+                    }
+                    ServiceEvent::ServiceResolved(info) => {
+                        println!("[+] Service resolved: {}", info.get_fullname());
+
+                        if let Some(payload_hex) = info.get_property_val_str("payload") {
+                            if !replay_detector.is_new(payload_hex) {
+                                continue;
+                            }
+
+                            if let Err(e) = callback(payload_hex) {
+                                println!("[!] Processing error: {}", e);
+                            }
+                        }
+                    }
+                    ServiceEvent::ServiceRemoved(fullname, _) => {
+                        println!("[-] Service removed: {}", fullname);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_replay_detector_new_payload() {
+        let mut detector = ReplayDetector::new(Duration::from_secs(60));
+        assert!(detector.is_new("deadbeef"));
+    }
+
+    #[test]
+    fn test_replay_detector_duplicate_payload() {
+        let mut detector = ReplayDetector::new(Duration::from_secs(60));
+        assert!(detector.is_new("deadbeef"));
+        assert!(!detector.is_new("deadbeef"));
+    }
+
+    #[test]
+    fn test_replay_detector_different_payloads() {
+        let mut detector = ReplayDetector::new(Duration::from_secs(60));
+        assert!(detector.is_new("deadbeef"));
+        assert!(detector.is_new("cafebabe"));
+        assert!(!detector.is_new("deadbeef"));
+        assert!(!detector.is_new("cafebabe"));
+    }
+
+    #[test]
+    fn test_replay_detector_expired_payload() {
+        let mut detector = ReplayDetector::new(Duration::from_millis(1));
+        assert!(detector.is_new("deadbeef"));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(detector.is_new("deadbeef"));
+    }
+
+    #[test]
+    fn test_replay_detector_prune_cleanup() {
+        let mut detector = ReplayDetector::new(Duration::from_millis(1));
+        detector.is_new("aaa");
+        detector.is_new("bbb");
+        std::thread::sleep(Duration::from_millis(5));
+        detector.is_new("ccc");
+        assert!(!detector.seen.contains("aaa"));
+        assert!(!detector.seen.contains("bbb"));
+        assert!(detector.seen.contains("ccc"));
+        assert_eq!(detector.seen.len(), 1);
+    }
+
+    #[test]
+    fn test_device_profile_full_service_name() {
+        let profile = DeviceProfile::new("_printer._tcp.local.", "HP", "LaserJet", 9100);
+        assert_eq!(
+            profile.full_service_name(),
+            "HP_LaserJet._printer._tcp.local."
+        );
+    }
+
+    #[test]
+    fn test_device_profiles_not_empty() {
+        assert!(!db::DEVICE_PROFILES.is_empty());
+        assert!(db::PRINTER_PROFILES.len() > 0);
+        assert!(db::TV_PROFILES.len() > 0);
+        assert!(db::PHONE_PROFILES.len() > 0);
+    }
+
+    #[test]
+    fn test_location_variations_not_empty() {
+        assert!(!db::LOCATION_VARIATIONS.is_empty());
+    }
+
+    #[test]
+    fn test_get_random_device_returns_valid() {
+        let device = get_random_device();
+        assert!(!device.vendor.is_empty());
+        assert!(!device.model.is_empty());
+        assert!(!device.service_type.is_empty());
+    }
+
+    #[test]
+    fn test_get_random_location_returns_valid() {
+        let location = get_random_location();
+        assert!(!location.is_empty());
+    }
 }

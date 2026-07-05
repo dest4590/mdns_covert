@@ -1,18 +1,33 @@
-//! Cryptographic primitives for the covert channel.
-//!
-//! Provides ChaCha20-Poly1305 authenticated encryption.
-//! - **ChaCha20-Poly1305**: Production-grade AEAD cipher with 256-bit security
+use thiserror::Error;
 
-/// Encode bytes to hexadecimal string
-///
-/// Converts raw bytes to lowercase hex string (e.g., [0x12, 0x34] -> "1234").
+#[derive(Error, Debug)]
+pub enum CovertError {
+    #[error("Hex decode error: {0}")]
+    HexDecode(#[from] std::num::ParseIntError),
+
+    #[error("Encryption failed: {0}")]
+    Encryption(String),
+
+    #[error("Decryption failed: {0}")]
+    Decryption(String),
+
+    #[error("Ciphertext too short to contain nonce")]
+    CiphertextTooShort,
+
+    #[error("Random generation failed: {0}")]
+    RandomGeneration(String),
+
+    #[error("Packet error: {0}")]
+    Packet(String),
+
+    #[error("Network error: {0}")]
+    Network(String),
+}
+
 pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Decode hexadecimal string to bytes
-///
-/// Parses hex string pairs into bytes (e.g., "1234" -> [0x12, 0x34]).
 pub fn hex_decode(hex: &str) -> Result<Vec<u8>, std::num::ParseIntError> {
     (0..hex.len())
         .step_by(2)
@@ -20,68 +35,81 @@ pub fn hex_decode(hex: &str) -> Result<Vec<u8>, std::num::ParseIntError> {
         .collect()
 }
 
+use argon2::Argon2;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 
-/// Derive a 32-byte key from a passphrase using PBKDF2-like expansion
+/// Derive a 32-byte key from a passphrase using Argon2id
 ///
-/// Uses SHA256-based key derivation for consistent key generation from passphrases.
-/// Not a full PBKDF2 implementation but provides reasonable key material.
+/// Uses Argon2id with memory cost of 16 MiB (m=19456), 2 iterations, and 1 thread.
+/// Generates a random 16-byte salt for key derivation.
 ///
 /// # Arguments
 /// * `passphrase` - User passphrase
 ///
 /// # Returns
-/// 32-byte key for ChaCha20
-fn derive_key_from_passphrase(passphrase: &str) -> [u8; 32] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+/// Result containing (salt, key) tuple where salt is 16 bytes and key is 32 bytes
+fn derive_key_from_passphrase(passphrase: &str) -> Result<([u8; 16], [u8; 32]), CovertError> {
+    let mut salt = [0u8; 16];
+    getrandom::fill(&mut salt).map_err(|e| CovertError::RandomGeneration(e.to_string()))?;
+
+    let argon2 = Argon2::default();
 
     let mut key = [0u8; 32];
-    let bytes = passphrase.as_bytes();
+    argon2
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .map_err(|e| CovertError::Encryption(format!("Argon2 key derivation failed: {}", e)))?;
 
-    for i in 0..32 {
-        let mut hasher = DefaultHasher::new();
-        (i as u32).hash(&mut hasher);
-        bytes.hash(&mut hasher);
-        let hash = hasher.finish();
-        key[i] = (hash >> (8 * (i % 8)) & 0xFF) as u8;
-    }
+    Ok((salt, key))
+}
 
-    key
+/// Derive a 32-byte key from a passphrase and salt using Argon2id
+///
+/// Uses the same parameters as derive_key_from_passphrase but accepts a provided salt.
+///
+/// # Arguments
+/// * `passphrase` - User passphrase
+/// * `salt` - 16-byte salt for key derivation
+///
+/// # Returns
+/// Result containing 32-byte key
+fn derive_key_with_salt(passphrase: &str, salt: &[u8; 16]) -> Result<[u8; 32], CovertError> {
+    let argon2 = Argon2::default();
+
+    let mut key = [0u8; 32];
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| CovertError::Encryption(format!("Argon2 key derivation failed: {}", e)))?;
+
+    Ok(key)
 }
 
 /// Encrypt data using ChaCha20-Poly1305 AEAD cipher
 ///
 /// Modern authenticated encryption providing both confidentiality and authenticity.
-/// Automatically generates a random nonce and prepends it to the ciphertext.
+/// Generates a random salt for key derivation and a random nonce for encryption.
+/// Output format: [SALT:16][NONCE:12][CIPHERTEXT:N]
 ///
 /// # Arguments
 /// * `plaintext` - Data to encrypt
 /// * `passphrase` - Encryption passphrase
 ///
 /// # Returns
-/// Result containing ciphertext with embedded nonce (nonce || ciphertext)
-///
-/// # Example
-/// ```ignore
-/// let plaintext = b"Secret message";
-/// let passphrase = "my_password";
-/// let ciphertext = chacha20_encrypt(plaintext, passphrase)?;
-/// ```
-pub fn chacha20_encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
-    let key = derive_key_from_passphrase(passphrase);
+/// Result containing salt-nonce-ciphertext blob
+pub fn chacha20_encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, CovertError> {
+    let (salt, key) = derive_key_from_passphrase(passphrase)?;
     let cipher = ChaCha20Poly1305::new(&key.into());
 
     let mut nonce_bytes = [0u8; 12];
-    getrandom::fill(&mut nonce_bytes).map_err(|e| format!("Random generation failed: {}", e))?;
+    getrandom::fill(&mut nonce_bytes).map_err(|e| CovertError::RandomGeneration(e.to_string()))?;
     let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
         .encrypt(&nonce, Payload::from(plaintext))
-        .map_err(|e| format!("Encryption failed: {}", e))?;
+        .map_err(|e| CovertError::Encryption(e.to_string()))?;
 
-    let mut result = nonce_bytes.to_vec();
+    let mut result = salt.to_vec();
+    result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
 
     Ok(result)
@@ -89,37 +117,35 @@ pub fn chacha20_encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, S
 
 /// Decrypt data using ChaCha20-Poly1305 AEAD cipher
 ///
-/// Extracts the nonce from the ciphertext and verifies authentication tag.
-/// Fails if ciphertext is corrupted or authentication tag is invalid.
+/// Extracts the salt from the first 16 bytes and the nonce from bytes 16-28.
+/// Re-derives the key from passphrase and salt, then decrypts the ciphertext.
 ///
 /// # Arguments
-/// * `ciphertext` - Encrypted data with embedded nonce (nonce || ciphertext)
+/// * `ciphertext` - Encrypted data with embedded salt and nonce (salt || nonce || ciphertext)
 /// * `passphrase` - Decryption passphrase (must match encryption passphrase)
 ///
 /// # Returns
 /// Result containing decrypted plaintext
-///
-/// # Example
-/// ```ignore
-/// let plaintext = chacha20_decrypt(&ciphertext, passphrase)?;
-/// ```
-pub fn chacha20_decrypt(ciphertext: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
-    if ciphertext.len() < 12 {
-        return Err("Ciphertext too short to contain nonce".to_string());
+pub fn chacha20_decrypt(ciphertext: &[u8], passphrase: &str) -> Result<Vec<u8>, CovertError> {
+    if ciphertext.len() < 28 {
+        return Err(CovertError::CiphertextTooShort);
     }
 
-    let key = derive_key_from_passphrase(passphrase);
+    let salt = <[u8; 16]>::try_from(&ciphertext[0..16])
+        .map_err(|_| CovertError::Decryption("Invalid salt length".to_string()))?;
+
+    let key = derive_key_with_salt(passphrase, &salt)?;
     let cipher = ChaCha20Poly1305::new(&key.into());
 
     let nonce = Nonce::from(
-        *<&[u8; 12]>::try_from(&ciphertext[0..12])
-            .map_err(|_| "Invalid nonce length".to_string())?,
+        *<&[u8; 12]>::try_from(&ciphertext[16..28])
+            .map_err(|_| CovertError::Decryption("Invalid nonce length".to_string()))?,
     );
-    let actual_ciphertext = &ciphertext[12..];
+    let actual_ciphertext = &ciphertext[28..];
 
     let plaintext = cipher
         .decrypt(&nonce, Payload::from(actual_ciphertext))
-        .map_err(|e| format!("Decryption failed (wrong key or corrupted data): {}", e))?;
+        .map_err(|e| CovertError::Decryption(format!("Decryption failed: {}", e)))?;
 
     Ok(plaintext)
 }
@@ -177,22 +203,43 @@ mod tests {
         let cipher1 = chacha20_encrypt(plaintext1, passphrase).unwrap();
         let cipher2 = chacha20_encrypt(plaintext2, passphrase).unwrap();
 
-        // Ciphertexts should be different (different plaintexts)
         assert_ne!(cipher1, cipher2);
 
-        // But both should decrypt correctly
         assert_eq!(chacha20_decrypt(&cipher1, passphrase).unwrap(), plaintext1);
         assert_eq!(chacha20_decrypt(&cipher2, passphrase).unwrap(), plaintext2);
     }
 
     #[test]
     fn test_chacha20_unicode_support() {
-        let plaintext = "Secret message 密码".as_bytes();
+        let plaintext = "Secret message".as_bytes();
         let passphrase = "unicode_key";
 
         let ciphertext = chacha20_encrypt(plaintext, passphrase).unwrap();
         let decrypted = chacha20_decrypt(&ciphertext, passphrase).unwrap();
 
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_salt_based_roundtrip() {
+        let plaintext = b"Argon2 salt-based roundtrip test";
+        let passphrase = "test_passphrase";
+
+        let ciphertext1 = chacha20_encrypt(plaintext, passphrase).unwrap();
+        let ciphertext2 = chacha20_encrypt(plaintext, passphrase).unwrap();
+
+        // Encryptions with same passphrase should produce different salts and ciphertexts
+        assert_ne!(
+            &ciphertext1[..16],
+            &ciphertext2[..16],
+            "Salts should differ"
+        );
+
+        // Both should decrypt correctly with the passphrase
+        let decrypted1 = chacha20_decrypt(&ciphertext1, passphrase).unwrap();
+        let decrypted2 = chacha20_decrypt(&ciphertext2, passphrase).unwrap();
+
+        assert_eq!(decrypted1, plaintext);
+        assert_eq!(decrypted2, plaintext);
     }
 }

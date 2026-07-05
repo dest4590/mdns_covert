@@ -1,6 +1,6 @@
 [package]
 name = "mdns_covert"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["dest4590 <dest4590@gmail.com>"]
 description = "Covert message transmission via mDNS with ChaCha20-Poly1305 encryption"
@@ -26,4 +26,6 @@ clap = { version = "4.6.1", features = ["derive"] }
 if-addrs = "0.15.0"
 chacha20poly1305 = "0.11.0"
 getrandom = "0.4.3"
-rand = { version = "0.10.1", features = ["std", "std_rng"] }
+rand = { version = "0.10.2", features = ["std", "std_rng"] }
+argon2 = "0.5.3"
+thiserror = "2.0.18"
