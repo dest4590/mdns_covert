@@ -22,17 +22,19 @@ pub const MAX_TXT_RECORD_SIZE: usize = 1350;
 /// Represents different types of messages that can be transmitted.
 /// - `Data` (0x01): Regular data message
 /// - `Ack` (0x02): Acknowledgment message
+/// - `File` (0x03): File transfer message
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageType {
     Data = 0x01,
     Ack = 0x02,
+    File = 0x03,
 }
 
 impl MessageType {
     /// Convert u8 to MessageType
     ///
     /// # Arguments
-    /// * `value` - Byte value (0x01 = Data, 0x02 = Ack)
+    /// * `value` - Byte value (0x01 = Data, 0x02 = Ack, 0x03 = File)
     ///
     /// # Returns
     /// * `Some(MessageType)` if valid, `None` otherwise
@@ -40,6 +42,7 @@ impl MessageType {
         match value {
             0x01 => Some(MessageType::Data),
             0x02 => Some(MessageType::Ack),
+            0x03 => Some(MessageType::File),
             _ => None,
         }
     }
@@ -143,6 +146,38 @@ impl Packet {
             self.payload[5],
         ]);
         ack_msg_id == message_id && ack_timestamp == timestamp
+    }
+
+    /// Create a new file transfer packet
+    ///
+    /// Packs the filename and file data into the payload:
+    /// `[FILENAME_LEN:2][FILENAME:N][FILE_DATA:M]`
+    pub fn new_file(filename: &str, file_data: &[u8]) -> Self {
+        let filename_bytes = filename.as_bytes();
+        let filename_len = filename_bytes.len() as u16;
+        let mut payload = Vec::with_capacity(2 + filename_bytes.len() + file_data.len());
+        payload.extend_from_slice(&filename_len.to_le_bytes());
+        payload.extend_from_slice(filename_bytes);
+        payload.extend_from_slice(file_data);
+        Self::new(MessageType::File, payload)
+    }
+
+    /// Parse a file transfer payload into filename and file data
+    pub fn parse_file_payload(&self) -> Result<(String, Vec<u8>), String> {
+        if self.msg_type != MessageType::File {
+            return Err("Not a file packet".to_string());
+        }
+        if self.payload.len() < 2 {
+            return Err("Payload too short for file header".to_string());
+        }
+        let filename_len = u16::from_le_bytes([self.payload[0], self.payload[1]]) as usize;
+        if self.payload.len() < 2 + filename_len {
+            return Err("Payload too short for filename".to_string());
+        }
+        let filename = String::from_utf8(self.payload[2..2 + filename_len].to_vec())
+            .map_err(|e| format!("Invalid UTF-8 in filename: {}", e))?;
+        let file_data = self.payload[2 + filename_len..].to_vec();
+        Ok((filename, file_data))
     }
 
     /// Split this packet into multiple fragments if the payload exceeds `MAX_FRAGMENT_PAYLOAD`
@@ -582,6 +617,19 @@ mod tests {
 
         assert_eq!(deserialized.msg_type, MessageType::Ack);
         assert!(deserialized.is_ack_for(original.message_id, original.timestamp));
+    }
+
+    #[test]
+    fn test_file_packet_creation_and_parsing() {
+        let filename = "important_document.pdf";
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34];
+        let packet = Packet::new_file(filename, &data);
+
+        assert_eq!(packet.msg_type, MessageType::File);
+
+        let (parsed_filename, parsed_data) = packet.parse_file_payload().unwrap();
+        assert_eq!(parsed_filename, filename);
+        assert_eq!(parsed_data, data);
     }
 
     // --- Constants tests ---

@@ -23,6 +23,12 @@ enum Commands {
         #[arg(short, long)]
         message: String,
     },
+    SendFile {
+        #[arg(short, long)]
+        key: String,
+        #[arg(short, long)]
+        file: String,
+    },
     Listen {
         #[arg(short, long)]
         key: String,
@@ -38,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match &cli.command {
         Commands::Send { key, message } => send_command(key, message)?,
+        Commands::SendFile { key, file } => send_file_command(key, file)?,
         Commands::Listen { key } => listen_command(key)?,
         Commands::Test { key } => test_command(key)?,
     }
@@ -83,44 +90,79 @@ fn send_command(key: &str, message: &str) -> Result<(), Box<dyn std::error::Erro
     }
 }
 
+fn send_file_command(key: &str, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("[*] Reading file: {}", file_path);
+    let path = std::path::Path::new(file_path);
+    if !path.exists() {
+        return Err(format!("File does not exist: {}", file_path).into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("Invalid file name: {}", file_path))?;
+
+    let file_data = std::fs::read(path)?;
+    println!("[*] Read {} bytes", file_data.len());
+
+    let covert_manager = mdns_covert::NetworkManager::new()?;
+    println!("[*] Sending file covertly...");
+    let (msg_id, timestamp) = covert_manager.send_file(filename, &file_data, key)?;
+
+    println!("\n[+] File transfer completed!");
+    println!("    ID: {}", msg_id);
+    println!("    Timestamp: {}", timestamp);
+    println!("    Filename: {}", filename);
+    println!("    Size: {} bytes", file_data.len());
+
+    println!("\n[*] Press Ctrl+C to exit");
+    loop {
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
 fn listen_command(key: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("[*] Listener initialized...");
     println!("[*] Encryption key: [hidden]");
 
-    let mdns = create_mdns_daemon()?;
+    let manager = mdns_covert::NetworkManager::new()?;
 
-    listen_packets(&mdns, |hex_payload: &str| {
-        println!(
-            "\n[*] Packet received (HEX: {}...)",
-            &hex_payload[..std::cmp::min(30, hex_payload.len())]
-        );
+    manager.listen_for_packets(key, |packet| {
+        println!("\n[+] Packet received of type {:?}", packet.msg_type);
+        println!("    ID: {}", packet.message_id);
+        println!("    Timestamp: {}", packet.timestamp);
+        println!("    Total assembled size: {} bytes", packet.payload.len());
 
-        let encrypted = hex_decode(hex_payload).map_err(|e| format!("HEX decode error: {}", e))?;
-
-        let packet_data =
-            chacha20_decrypt(&encrypted, key).map_err(|e| format!("Decryption error: {}", e))?;
-
-        let packet = Packet::deserialize(&packet_data)
-            .map_err(|e| format!("Deserialization error: {}", e))?;
-
-        match String::from_utf8(packet.payload.clone()) {
-            Ok(text) => {
-                println!("[+] Message from {:?}:", packet.msg_type);
-                println!("    ID: {}", packet.message_id);
-                println!("    Timestamp: {}", packet.timestamp);
-                println!("    Size: {} bytes", packet.payload.len());
-                println!("    {}", text);
-            }
-            Err(_) => {
-                println!("[!] Payload is not text");
-                println!(
-                    "    Bytes: {:?}",
-                    &packet.payload[..std::cmp::min(20, packet.payload.len())]
-                );
+        match packet.msg_type {
+            MessageType::Data => match String::from_utf8(packet.payload) {
+                Ok(text) => {
+                    println!("[+] Message content:\n    {}", text);
+                }
+                Err(_) => {
+                    println!("[!] Data is not valid UTF-8 text");
+                }
+            },
+            MessageType::File => match packet.parse_file_payload() {
+                Ok((filename, data)) => {
+                    println!("[+] Received File: {}", filename);
+                    println!("    Size: {} bytes", data.len());
+                    let safe_filename = std::path::Path::new(&filename)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("received_file");
+                    let out_filename = format!("received_{}", safe_filename);
+                    match std::fs::write(&out_filename, &data) {
+                        Ok(_) => println!("[+] Saved file to: {}", out_filename),
+                        Err(e) => println!("[!] Failed to save file: {}", e),
+                    }
+                }
+                Err(e) => {
+                    println!("[!] Failed to parse file payload: {}", e);
+                }
+            },
+            MessageType::Ack => {
+                println!("[*] Received Ack packet");
             }
         }
-
-        Ok(())
     })?;
 
     Ok(())
@@ -153,7 +195,7 @@ fn test_command(key: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("[*] Starting receiver...");
     thread::sleep(Duration::from_secs(2));
 
-    let messages = vec!["Hello, World!", "Testing mDNS", "Secret message"];
+    let messages = ["Hello, World!", "Testing mDNS", "Secret message"];
 
     let mdns = create_mdns_daemon()?;
     let mut sent_count = 0u32;

@@ -79,3 +79,33 @@ fn test_replay_detector() {
     assert!(!detector.is_new("payload1"));
     assert!(detector.is_new("payload2"));
 }
+
+#[test]
+fn test_file_transfer_serialization_and_fragmentation() {
+    let filename = "secret_instructions.txt";
+    let file_data = vec![0x12; 4000]; // 4KB file, forces fragmentation
+
+    let packet = Packet::new_file(filename, &file_data);
+    assert_eq!(packet.msg_type, MessageType::File);
+
+    let fragments = packet.fragment();
+    assert!(fragments.len() > 1);
+
+    let mut assembler = FragmentAssembler::new();
+    let mut reassembled = None;
+    for frag in fragments {
+        // Serialize and deserialize each fragment to simulate transit
+        let serialized = frag.serialize();
+        let deserialized = Packet::deserialize(&serialized).unwrap();
+        if let Some(res) = assembler.add_fragment(deserialized) {
+            reassembled = Some(res);
+        }
+    }
+
+    let reassembled = reassembled.expect("Reassembly should be complete");
+    assert_eq!(reassembled.msg_type, MessageType::File);
+
+    let (parsed_filename, parsed_data) = reassembled.parse_file_payload().unwrap();
+    assert_eq!(parsed_filename, filename);
+    assert_eq!(parsed_data, file_data);
+}

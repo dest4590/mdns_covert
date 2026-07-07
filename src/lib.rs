@@ -59,7 +59,7 @@ pub mod prelude {
 
 use crypto::{chacha20_decrypt, chacha20_encrypt, hex_decode, hex_encode};
 use network::{create_mdns_daemon, listen_packets, send_packet};
-use protocol::{MessageType, Packet};
+use protocol::{FragmentAssembler, MessageType, Packet};
 
 /// High-level API for covert channel communication
 ///
@@ -105,16 +105,45 @@ impl NetworkManager {
     /// ```
     pub fn send_message(&self, message: &str, passphrase: &str) -> Result<(u16, u32), CovertError> {
         let message_bytes = message.as_bytes().to_vec();
-        let mut packet = Packet::new(MessageType::Data, message_bytes);
-        packet.sequence = 0;
+        let packet = Packet::new(MessageType::Data, message_bytes);
+        let message_id = packet.message_id;
+        let timestamp = packet.timestamp;
+        let fragments = packet.fragment();
 
-        let packet_data = packet.serialize();
-        let encrypted = chacha20_encrypt(&packet_data, passphrase)?;
-        let hex_payload = hex_encode(&encrypted);
+        for frag in fragments {
+            let packet_data = frag.serialize();
+            let encrypted = chacha20_encrypt(&packet_data, passphrase)?;
+            let hex_payload = hex_encode(&encrypted);
+            send_packet(&self.mdns, &hex_payload).map_err(CovertError::Network)?;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
 
-        send_packet(&self.mdns, &hex_payload).map_err(CovertError::Network)?;
+        Ok((message_id, timestamp))
+    }
 
-        Ok((packet.message_id, packet.timestamp))
+    /// Send a file through the covert channel using ChaCha20-Poly1305 encryption
+    ///
+    /// Packs filename and file data, fragments if necessary, and sends them via mDNS.
+    pub fn send_file(
+        &self,
+        filename: &str,
+        file_data: &[u8],
+        passphrase: &str,
+    ) -> Result<(u16, u32), CovertError> {
+        let packet = Packet::new_file(filename, file_data);
+        let message_id = packet.message_id;
+        let timestamp = packet.timestamp;
+        let fragments = packet.fragment();
+
+        for frag in fragments {
+            let packet_data = frag.serialize();
+            let encrypted = chacha20_encrypt(&packet_data, passphrase)?;
+            let hex_payload = hex_encode(&encrypted);
+            send_packet(&self.mdns, &hex_payload).map_err(CovertError::Network)?;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        Ok((message_id, timestamp))
     }
 
     /// Listen for messages on the covert channel using ChaCha20-Poly1305 decryption
@@ -143,6 +172,26 @@ impl NetworkManager {
     where
         F: FnMut(&str),
     {
+        self.listen_for_packets(passphrase, |packet| {
+            if packet.msg_type == MessageType::Data
+                && let Ok(text) = String::from_utf8(packet.payload) {
+                    callback(&text);
+                }
+        })
+    }
+
+    /// Listen for any covert packets, handling decryption and fragment reassembly.
+    ///
+    /// Once all fragments of a packet are assembled, the callback is invoked with the completed packet.
+    pub fn listen_for_packets<F>(
+        &self,
+        passphrase: &str,
+        mut callback: F,
+    ) -> Result<(), CovertError>
+    where
+        F: FnMut(Packet),
+    {
+        let mut assembler = FragmentAssembler::new();
         listen_packets(&self.mdns, |hex_payload: &str| {
             let encrypted =
                 hex_decode(hex_payload).map_err(|e| format!("Hex decode error: {}", e))?;
@@ -153,8 +202,8 @@ impl NetworkManager {
             let packet =
                 Packet::deserialize(&decrypted).map_err(|e| format!("Parse error: {}", e))?;
 
-            if let Ok(text) = String::from_utf8(packet.payload.clone()) {
-                callback(&text);
+            if let Some(reassembled) = assembler.add_fragment(packet) {
+                callback(reassembled);
             }
 
             Ok(())
