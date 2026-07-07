@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_fragment_single_small_payload() {
-        let payload = vec![0xAB; 512];
+        let payload = vec![0xAB; MAX_FRAGMENT_PAYLOAD / 2];
         let packet = Packet::new(MessageType::Data, payload.clone());
         let fragments = packet.fragment();
 
@@ -458,14 +458,14 @@ mod tests {
 
     #[test]
     fn test_fragment_large_payload() {
-        let payload = vec![0xCD; MAX_FRAGMENT_PAYLOAD * 2 + 100];
+        let payload = vec![0xCD; MAX_FRAGMENT_PAYLOAD * 2 + 10];
         let packet = Packet::new(MessageType::Data, payload.clone());
         let fragments = packet.fragment();
 
         assert_eq!(fragments.len(), 3);
         assert_eq!(fragments[0].payload.len(), MAX_FRAGMENT_PAYLOAD);
         assert_eq!(fragments[1].payload.len(), MAX_FRAGMENT_PAYLOAD);
-        assert_eq!(fragments[2].payload.len(), 100);
+        assert_eq!(fragments[2].payload.len(), 10);
 
         // All fragments share the same message_id and timestamp
         for f in &fragments {
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_reassemble_single_fragment() {
-        let payload = vec![0xBB; 100];
+        let payload = vec![0xBB; MAX_FRAGMENT_PAYLOAD / 2];
         let packet = Packet::new(MessageType::Data, payload.clone());
         let fragments = packet.fragment();
 
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_is_complete() {
-        let payload = vec![0xDD; MAX_FRAGMENT_PAYLOAD + 100];
+        let payload = vec![0xDD; MAX_FRAGMENT_PAYLOAD + 10];
         let packet = Packet::new(MessageType::Data, payload);
         let fragments = packet.fragment();
 

@@ -231,6 +231,39 @@ fn main() -> Result<(), CovertError> {
 }
 ```
 
+### Example 9: File Transfer (High-Level)
+
+Demonstrates how to send and receive files covertly using `NetworkManager`.
+
+```rust
+use mdns_covert::NetworkManager;
+use mdns_covert::prelude::MessageType;
+use std::fs;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manager = NetworkManager::new()?;
+    let key = "my_secret_key";
+
+    // === SENDER ===
+    let file_data = fs::read("confidential.pdf")?;
+    let (message_id, timestamp) = manager.send_file("confidential.pdf", &file_data, key)?;
+    println!("File transfer initiated - ID: {}, Timestamp: {}", message_id, timestamp);
+
+    // === RECEIVER ===
+    // listen_for_packets will reassemble and decrypt incoming packet fragments automatically
+    manager.listen_for_packets(key, |packet| {
+        if packet.msg_type == MessageType::File {
+            if let Ok((filename, data)) = packet.parse_file_payload() {
+                println!("Received file: {} ({} bytes)", filename, data.len());
+                fs::write(format!("received_{}", filename), data).unwrap();
+            }
+        }
+    })?;
+
+    Ok(())
+}
+```
+
 ## API Reference
 
 ### `NetworkManager`
@@ -241,7 +274,9 @@ High-level API for simple message transmission.
 impl NetworkManager {
     pub fn new() -> Result<Self, CovertError>
     pub fn send_message(&self, message: &str, key: &str) -> Result<(u16, u32), CovertError>
+    pub fn send_file(&self, filename: &str, file_data: &[u8], key: &str) -> Result<(u16, u32), CovertError>
     pub fn listen_for_messages<F>(&self, key: &str, callback: F) -> Result<(), CovertError>
+    pub fn listen_for_packets<F>(&self, key: &str, callback: F) -> Result<(), CovertError>
     pub fn get_local_ip(&self) -> String
     pub fn mdns(&self) -> &mdns_sd::ServiceDaemon
 }
@@ -251,12 +286,13 @@ impl NetworkManager {
 
 ```rust
 pub const PROTOCOL_VERSION: u8;
-pub const MAX_FRAGMENT_PAYLOAD: usize;  // 1024
-pub const MAX_TXT_RECORD_SIZE: usize;   // 1350
+pub const MAX_FRAGMENT_PAYLOAD: usize;  // 64
+pub const MAX_TXT_RECORD_SIZE: usize;   // 255
 
 pub enum MessageType {
     Data = 0x01,
     Ack = 0x02,
+    File = 0x03,
 }
 
 pub struct Packet {
@@ -271,6 +307,8 @@ pub struct Packet {
 
 impl Packet {
     pub fn new(msg_type: MessageType, payload: Vec<u8>) -> Self;
+    pub fn new_file(filename: &str, file_data: &[u8]) -> Self;
+    pub fn parse_file_payload(&self) -> Result<(String, Vec<u8>), String>;
     pub fn serialize(&self) -> Vec<u8>;
     pub fn deserialize(data: &[u8]) -> Result<Self, String>;
     pub fn fragment(&self) -> Vec<Packet>;

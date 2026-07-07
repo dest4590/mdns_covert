@@ -78,14 +78,25 @@ Extract payload & display
 Offset  Size  Field                 Description
 ───────────────────────────────────────────────────────
 0       1     VERSION               Protocol version (0x01)
-1       1     TYPE                  Message type (0x01=Data, 0x02=Ack)
+1       1     TYPE                  Message type (0x01=Data, 0x02=Ack, 0x03=File)
 2       2     ID (LE)               Message identifier (millisecond-based)
 4       4     TIMESTAMP (LE)        Unix timestamp
 8       1     SEQUENCE              Fragment sequence number
 9       1     TOTAL_FRAGS           Total number of fragments (1 if unfragmented)
 10      2     LENGTH (LE)           Payload size in bytes
 12      N     PAYLOAD               Raw message data
+
+### File Payload Format
+
+When the Message TYPE is `0x03` (File), the `PAYLOAD` field uses the following binary format:
+
 ```
+[FILENAME_LEN:2 (LE)][FILENAME:N (UTF-8)][FILE_DATA:M (Raw bytes)]
+```
+
+- **FILENAME_LEN**: A 2-byte little-endian unsigned integer indicating the length of the filename in bytes.
+- **FILENAME**: The UTF-8 string representing the filename.
+- **FILE_DATA**: The remainder of the payload containing the raw file contents.
 
 ### After ChaCha20-Poly1305 Encryption
 

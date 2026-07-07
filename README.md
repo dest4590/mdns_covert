@@ -7,6 +7,7 @@ A Rust library for covert message transmission via mDNS (Multicast DNS). Message
 ## Features
 
 - **ChaCha20-Poly1305**: 256-bit authenticated encryption with AEAD
+- **File Transfer**: Covert file transmission with automatic name packing and disk saving
 - **Multi-Vendor Masking**: 20+ realistic printer profiles from 8 manufacturers
 - **Randomized Identities**: Each message uses random printer identity & location
 - **Modular Design**: Protocol, crypto, and network layers separated
@@ -48,10 +49,16 @@ fn main() -> Result<(), String> {
 cargo run -- listen --key "my_key"
 ```
 
-**Terminal 2 - Send:**
+**Terminal 2 - Send Message:**
 
 ```bash
 cargo run -- send --message "Hello!" --key "my_key"
+```
+
+**Terminal 2 - Send File:**
+
+```bash
+cargo run -- send-file --file "path/to/secret.txt" --key "my_key"
 ```
 
 ## API Usage
@@ -64,12 +71,16 @@ use mdns_covert::NetworkManager;
 // Create manager
 let manager = NetworkManager::new()?;
 
-// Send with auto ID & timestamp
+// Send message with auto ID & timestamp
 let (id, timestamp) = manager.send_message("Hello World", "password")?;
 
-// Listen with callback
-manager.listen_for_messages("password", |text| {
-    println!("Got: {}", text);
+// Send file covertly (handles fragmentation & metadata auto-packing)
+let file_data = b"secret file contents".to_vec();
+let (id, timestamp) = manager.send_file("secret.txt", &file_data, "password")?;
+
+// Listen with callback (automatically reassembles fragmented messages/files)
+manager.listen_for_packets("password", |packet| {
+    println!("Received message/file of type {:?}", packet.msg_type);
 })?;
 ```
 
