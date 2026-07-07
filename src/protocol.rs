@@ -11,11 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const PROTOCOL_VERSION: u8 = 0x01;
 
 /// Maximum payload size for a single mDNS TXT record packet (bytes)
-/// mDNS TXT records are limited to ~1350 bytes; accounting for encryption overhead (nonce + tag)
-/// and protocol header (11 bytes), we use 1024 as a safe max payload per fragment.
-pub const MAX_FRAGMENT_PAYLOAD: usize = 1024;
+/// DNS TXT record properties (key=value) are limited to 255 bytes.
+/// Keeping MAX_FRAGMENT_PAYLOAD at 64 bytes ensures that when the packet
+/// is encrypted (adding 44 bytes of salt/nonce/tag overhead) and hex-encoded,
+/// the total length fits comfortably within the 255-byte limit.
+pub const MAX_FRAGMENT_PAYLOAD: usize = 64;
 
-pub const MAX_TXT_RECORD_SIZE: usize = 1350;
+pub const MAX_TXT_RECORD_SIZE: usize = 255;
 
 /// Message type enumeration
 ///
